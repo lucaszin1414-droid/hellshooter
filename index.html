@@ -1,0 +1,1177 @@
+  <!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<title>Hell Shooter</title>
+<style>
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: Arial, sans-serif;
+  background: radial-gradient(circle at top left, #200000, #000);
+  color: #fff;
+}
+button {
+  background: linear-gradient(135deg, #5b0000, #200000);
+  border: 1px solid #aa0000;
+  color: #fff;
+  padding: 12px 24px;
+  margin: 10px 0;
+  cursor: pointer;
+}
+.hidden { display: none; }
+#menu, #difficulty, #loading, #gameScreen {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+}
+#menuContent {
+  position: absolute;
+  left: 8%;
+  top: 25%;
+}
+#menu h1 { font-size: 64px; color: #ff0000; }
+#footer { position:absolute; bottom:10px; left:10px; font-size:12px; opacity:.6; }
+#loadingText { position:absolute; bottom:40px; left:20px; animation: blink 1s infinite; }
+#loadingBar { position:absolute; bottom:20px; left:20px; width:200px; height:6px; border:1px solid #800000; }
+#loadingProgress { height:100%; width:0%; background:#ff0000; }
+#controls { position:absolute; top:10px; left:10px; font-size:12px; line-height:1.4; opacity:.8; }
+@keyframes blink { 50%{opacity:.2;} }
+canvas{display:block;}
+</style>
+</head>
+<body>
+
+<div id="menu">
+  <div id="menuContent">
+    <h1>HELL SHOOTER</h1>
+    <button onclick="openDifficulty()">COMEÇAR JOGO</button><br>
+    <button>OPÇÕES</button>
+  </div>
+  <div id="footer">alpha 0.0.1</div>
+</div>
+
+<div id="difficulty" class="hidden">
+  <div id="menuContent">
+    <h1>DIFICULDADE</h1>
+    <button onclick="startGame()">FÁCIL</button><br>
+    <button onclick="startGame()">NORMAL</button><br>
+    <button onclick="startGame()">DIFÍCIL</button><br>
+    <button onclick="backToMenu()">VOLTAR</button>
+  </div>
+</div>
+
+<div id="loading" class="hidden">
+  <div id="loadingText">LOADING...</div>
+  <div id="loadingBar"><div id="loadingProgress"></div></div>
+</div>
+
+<div id="gameScreen" class="hidden">
+  <div id="controls">
+    W/S: mover<br>
+    A/D: olhar<br>
+    LMB: atirar<br>
+    RMB: recarregar
+  </div>
+  <canvas id="game"></canvas>
+</div>
+
+<script>
+
+const menu = document.getElementById('menu');
+const difficulty = document.getElementById('difficulty');
+const loading = document.getElementById('loading');
+const gameScreen = document.getElementById('gameScreen');
+
+const MAX_ENEMIES = 12;   // <-- coloque antes
+let enemyTotal = MAX_ENEMIES;
+let enemyDead = 0;
+let isReloading = false;
+let reloadAnim = 0;
+
+let portalActive = false;
+let portalX = 2.5;
+let portalY = 2.5;
+let playerNearPortal = false;
+let portalVisible = false; // NOVO: se tem LOS
+const bloodSplats = [];
+let levelType = 'normal'; // 'normal' | 'boss'
+
+
+function generateBossMap() {
+  for (let y = 0; y < mapSize; y++) {
+    for (let x = 0; x < mapSize; x++) {
+      map[y][x] =
+        x === 0 || y === 0 || x === mapSize - 1 || y === mapSize - 1
+          ? 1
+          : 0;
+    }
+  }
+}
+
+function enterBossRoom() {
+  levelType = 'boss';
+
+  // limpa coisas da sala normal
+  enemies.length = 0;
+  portal = null;
+  portalActive = false;
+
+  // reposiciona player
+  player.x = 2.5;
+  player.y = 2.5;
+  player.angle = 0;
+
+  // gera mapa do boss (opcionalmente diferente)
+  generateBossMap();
+
+  // cria o boss
+  spawnBoss();
+}
+
+
+function resetGame(){
+  player.x = 2.5;
+  player.y = 2.5;
+  player.angle = 0;
+  player.hp = player.maxHp;
+  playerDead = false;
+  deathCam = 0;
+
+  enemies.length = 0;
+  spawnEnemies();
+
+  ammo = 10;
+  mags = 15;
+  damageCooldown = 0;
+  damageFlash = 0;
+  recoil = 0;
+  flash = 0;
+
+  enemyTotal = MAX_ENEMIES;  // <-- assim
+  enemyDead = 0;
+
+portalActive = false;
+portalOpened = false;
+showPortalMessage = false;
+portalX = 2.5;
+portalY = 2.5;
+
+
+}
+
+
+
+
+function goToMenu(){
+  // esconde tela de jogo
+  gameScreen.classList.add('hidden');
+
+  // mostra menu
+  menu.classList.remove('hidden');
+  difficulty.classList.add('hidden');
+  loading.classList.add('hidden');
+
+  // reseta o jogo
+  resetGame();
+}
+
+
+// ===== MENU FLOW =====
+function openDifficulty(){ menu.classList.add('hidden'); difficulty.classList.remove('hidden'); }
+function backToMenu(){ difficulty.classList.add('hidden'); menu.classList.remove('hidden'); }
+function startGame(){
+  difficulty.classList.add('hidden'); loading.classList.remove('hidden');
+  let p=0; 
+  const i=setInterval(()=>{ 
+    p+=10; loadingProgress.style.width=p+'%';
+    if(p>=100){ 
+      clearInterval(i); 
+      loading.classList.add('hidden'); 
+      gameScreen.classList.remove('hidden'); 
+      initGame(); 
+    }
+  },100);
+  
+
+}
+
+// ===== GAME CORE =====
+let canvas, ctx;
+const FOV=Math.PI/3, MAX_DEPTH=20;
+const player={
+  x:2.5,
+  y:2.5,
+  angle:0,
+  speed:.05,
+
+  // ===== VIDA =====
+  hp: 100,
+  maxHp: 100
+};
+
+
+
+const RELOAD_TIME = 100; // frames (1s se 60fps)
+
+let ammo=10, maxAmmo=10, mags=15;
+let recoil = 0;
+let flash = 0;
+
+
+
+
+// ===== SPRITE DA ARMA =====
+const gunImg = new Image();
+gunImg.src = 'gun.png';
+
+let shootAnim = 0;
+
+let wallDepthBuffer = [];
+
+// ===== SPRITES DOS INIMIGOS =====
+const enemyImg1 = new Image();
+enemyImg1.src = 'enemy1.png';
+
+const enemyImg2 = new Image();
+enemyImg2.src = 'enemy2.png';
+
+
+
+// ===== MAP =====
+let mapSize = 20; // AUMENTA O MAPA (12 → 20)
+
+const map = Array.from({ length: mapSize }, (_, y) =>
+  Array.from({ length: mapSize }, (_, x) => {
+    // PAREDES EXTERNAS 100% FECHADAS
+    if (
+      x === 0 ||
+      y === 0 ||
+      x === mapSize - 1 ||
+      y === mapSize - 1
+    ) return 1;
+
+    // PAREDES INTERNAS MAIS CONTROLADAS (menos caos)
+    return Math.random() < 0.12 ? 1 : 0;
+  })
+);
+
+function generateEmptyRoom(size = 24){
+  map.length = 0;
+
+  for(let y = 0; y < size; y++){
+    const row = [];
+    for(let x = 0; x < size; x++){
+      if (
+        x === 0 ||
+        y === 0 ||
+        x === size - 1 ||
+        y === size - 1
+      ) {
+        row.push(1); // paredes
+      } else {
+        row.push(0); // vazio total
+      }
+    }
+    map.push(row);
+  }
+
+  mapSize = size;
+}
+
+function goToNextRoom(){
+  // gera sala grande e vazia
+  generateEmptyRoom(24);
+
+  // reposiciona player no centro
+  player.x = mapSize / 2;
+  player.y = mapSize / 2;
+  player.angle = 0;
+
+  // limpa inimigos
+  enemies.length = 0;
+  enemyDead = 0;
+  enemyTotal = 0;
+
+  // reseta portal
+  portalActive = false;
+  portalVisible = false;
+  playerNearPortal = false;
+
+  // limpa sangue e efeitos
+  bloodSplats.length = 0;
+
+  // reseta munição básica (opcional)
+  recoil = 0;
+  flash = 0;
+}
+
+function usePortal(){
+  if (portalActive && playerNearPortal){
+    goToNextRoom();
+  }
+}
+
+
+// ===== UTILS =====
+function clamp(v,min,max){ return Math.max(min,Math.min(max,v)); }
+function isWall(x,y){
+  const ix=Math.floor(x), iy=Math.floor(y);
+  if(ix<0||iy<0||ix>=mapSize||iy>=mapSize) return true;
+  return map[iy][ix]===1;
+}
+
+function canMove(x, y, radius = 0.2) {
+  // Testa 4 pontos ao redor (anti-quinas)
+  return (
+    !isWall(x + radius, y) &&
+    !isWall(x - radius, y) &&
+    !isWall(x, y + radius) &&
+    !isWall(x, y - radius)
+  );
+}
+
+function wallRepulsion(x, y, strength = 0.03) {
+  let fx = 0, fy = 0;
+
+  const checks = [
+    [ x+0.3, y ],
+    [ x-0.3, y ],
+    [ x, y+0.3 ],
+    [ x, y-0.3 ]
+  ];
+
+  checks.forEach(([cx, cy]) => {
+    if (isWall(cx, cy)) {
+      fx += x - cx;
+      fy += y - cy;
+    }
+  });
+
+  return { fx: fx * strength, fy: fy * strength };
+}
+const ENEMY_MIN_DIST = 0.9;   // não gruda
+const ENEMY_MAX_DIST = 6.0;   // começa a perseguir
+const WALL_PUSH = 0.07;      // força que afasta inimigos das paredes
+
+
+// ===== DANO AO PLAYER =====
+const ENEMY_DAMAGE = 5;
+const DAMAGE_INTERVAL = 30; // frames entre hits
+let damageCooldown = 0;
+
+let damageFlash = 0;
+let playerDead = false;
+let deathCam = 0; // 0 → normal | 1 → subindo
+
+
+// ===== ENEMIES =====
+const enemies=[];
+const MIN_SPAWN_DIST=3;
+
+function spawnEnemies(){
+  enemies.length=0;
+  let tries=0;
+  while(enemies.length<MAX_ENEMIES && tries<600){
+    tries++;
+
+    let x=Math.random()*(mapSize-2)+1;
+    let y=Math.random()*(mapSize-2)+1;
+
+    const dist=Math.hypot(x-player.x,y-player.y);
+
+    // garante distância segura do player e paredes
+    if(dist < MIN_SPAWN_DIST) continue;
+    if(!canMove(x, y, 0.35)) continue; // evita spawn em cantos
+
+    enemies.push({
+  x,
+  y,
+  dir: Math.random() * Math.PI * 2,
+  speed: 0.006 + Math.random() * 0.004,
+  turnTimer: 80 + Math.random() * 160,
+  animTime: Math.random() * Math.PI * 2,
+  walkPhase: 0,
+  hp: 100,
+  maxHp: 100,
+  showHp: false,
+  dead: false,
+  deathAnim: 0,
+  aggressive: false,
+  alerted: false,
+  currentSpeed: 0,
+
+  
+
+});
+
+  }
+}
+
+
+
+// ===== INPUT =====
+const keys = {};
+
+window.onkeydown = (e) => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+
+  // RELOAD
+  if (k === "r") reload();
+
+  // USAR PORTAL
+  if (k === "e") {
+    // Só vai funcionar se o portal estiver ativo e o player estiver perto
+    usePortal();
+  }
+};
+
+window.onkeyup = (e) => {
+  keys[e.key.toLowerCase()] = false;
+};
+
+window.onmousedown = (e) => {
+  if (e.button === 0) shoot();   // clique esquerdo
+  if (e.button === 2) reload();  // clique direito
+};
+
+window.oncontextmenu = (e) => e.preventDefault();
+
+
+
+// ===== INIT =====
+function initGame(){
+  canvas=document.getElementById('game');
+  ctx=canvas.getContext('2d');
+  canvas.width=innerWidth;
+  canvas.height=innerHeight;
+  spawnEnemies();
+  loop();
+  if (levelType === 'boss') {
+  spawnBoss();
+} else {
+  spawnEnemies();
+}
+
+}
+
+// ===== ACTIONS =====
+function shoot(){
+  if (ammo <= 0 || isReloading) return;
+
+  ammo--;
+  recoil = 10;
+  flash = 5;
+  shootAnim = 6;
+
+  checkHit();
+}
+
+
+function reload() {
+  if (mags <= 0 || ammo === maxAmmo || isReloading) return;
+  isReloading = true;
+  reloadAnim = 0;
+}
+
+
+
+
+// ===== HIT DETECTION =====
+function checkHit(){
+  let closest = null;
+  let minDist = Infinity;
+
+  const fx = Math.cos(player.angle);
+  const fy = Math.sin(player.angle);
+
+  enemies.forEach(e => {
+    if (e.dead) return;
+
+    const dx = e.x - player.x;
+    const dy = e.y - player.y;
+
+    const dist = Math.hypot(dx, dy);
+
+    // Se o inimigo estiver muito longe, ignora
+    if (dist > MAX_DEPTH) return;
+
+    // Projeção do inimigo no vetor forward
+    const forwardDot = dx * fx + dy * fy;
+    if (forwardDot <= 0) return; // está atrás
+
+    // Distância perpendicular da linha de tiro
+    const perpDist = Math.abs(dx * fy - dy * fx);
+
+    const HIT_RADIUS = 0.3; // tamanho do "acerto"
+
+    if (perpDist > HIT_RADIUS) return;
+
+    // Checa se existe parede no caminho
+    const angToEnemy = Math.atan2(dy, dx);
+    const hit = castRay(angToEnemy, dist);
+
+    if (hit < dist - 0.1) return;
+
+    // Se chegou aqui, acertou
+    if (dist < minDist){
+      minDist = dist;
+      closest = e;
+    }
+  });
+
+  if (closest){
+    closest.hp -= 25;
+    closest.showHp = true;
+    closest.aggressive = true;
+
+    spawnBlood(closest.x, closest.y);
+
+    if (closest.hp <= 0){
+      closest.hp = 0;
+      closest.dead = true;
+      closest.deathAnim = 30;
+      enemyDead++;
+    }
+  }
+}
+
+function spawnBlood(x, y, amount = 6){
+  for(let i=0;i<amount;i++){
+    bloodSplats.push({
+      x: x + (Math.random()-0.5)*0.4,
+      y: y + (Math.random()-0.5)*0.4,
+      life: 25 + Math.random()*20,
+      size: 0.1 + Math.random()*0.2,
+      rot: Math.random()*Math.PI*2,
+      speed: 0.01 + Math.random()*0.02
+    });
+  }
+}
+
+
+// ===== RAYCAST =====
+function castRay(a, maxDist=MAX_DEPTH){
+  const sin=Math.sin(a), cos=Math.cos(a);
+  for(let d=0;d<maxDist;d+=0.05){
+    const x=player.x+cos*d;
+    const y=player.y+sin*d;
+    if(isWall(x,y)) return d;
+  }
+  return maxDist;
+}
+
+function hasLineOfSight(ex,ey){
+  const dx=ex-player.x;
+  const dy=ey-player.y;
+  const dist=Math.hypot(dx,dy);
+  const ang=Math.atan2(dy,dx);
+  const hit=castRay(ang, dist);
+  return hit>=dist-0.1;
+}
+
+// ===== PHYSICS =====
+function updateInput(){
+  if(keys['a']) player.angle-=0.02;
+  if(keys['d']) player.angle+=0.02;
+}
+
+function updatePhysics(){
+  let nx=player.x, ny=player.y;
+  if(keys['w']){
+    nx+=Math.cos(player.angle)*player.speed;
+    ny+=Math.sin(player.angle)*player.speed;
+  }
+  if(keys['s']){
+    nx-=Math.cos(player.angle)*player.speed;
+    ny-=Math.sin(player.angle)*player.speed;
+  }
+  if (canMove(nx, player.y)) player.x = clamp(nx, 1, mapSize - 1);
+  if (canMove(player.x, ny)) player.y = clamp(ny, 1, mapSize - 1);
+
+}
+
+function updateEnemies(){
+  enemies
+  .slice()
+  .sort((a,b)=>{
+    const da = Math.hypot(a.x-player.x, a.y-player.y);
+    const db = Math.hypot(b.x-player.x, b.y-player.y);
+    return db - da;
+  })
+  .forEach(e=>{
+
+    if(e.dead){
+      e.deathAnim--;
+      return;
+
+// animação simples do sprite (ping-pong)
+e.animTime += 0.1;
+
+
+    }
+
+    // distância até o player
+    const dx = player.x - e.x;
+    const dy = player.y - e.y;
+    const dist = Math.hypot(dx, dy);
+
+    // ===== ATAQUE AO PLAYER =====
+    if (!playerDead && dist < ENEMY_MIN_DIST + 0.2) {
+      if (damageCooldown <= 0) {
+        player.hp -= ENEMY_DAMAGE;
+        damageFlash = 10;
+        damageCooldown = DAMAGE_INTERVAL;
+
+        if (player.hp <= 0) {
+          player.hp = 0;
+          playerDead = true;
+          deathCam = 0;
+        }
+      }
+    }
+
+    // ===== VISÃO / AGRO =====
+    if (dist < ENEMY_MAX_DIST && hasLineOfSight(e.x, e.y)) {
+      e.alerted = true;
+    }
+
+    // ===== DIREÇÃO =====
+    if (e.alerted) {
+      if (dist > ENEMY_MIN_DIST) {
+        // se aproxima
+        e.dir = Math.atan2(dy, dx);
+        e.currentSpeed = Math.min(e.currentSpeed + 0.0002, e.speed);
+      } else {
+        // mantém distância (orbita levemente)
+        e.currentSpeed = 0;
+        e.dir += 0.02; // efeito "cercando"
+      }
+    } else {
+      // patrulha
+      e.currentSpeed = Math.max(e.currentSpeed - 0.0002, 0);
+
+      e.turnTimer--;
+      if(e.turnTimer <= 0){
+        e.dir += (Math.random() - 0.5);
+        e.turnTimer = 80 + Math.random() * 160;
+      }
+    }
+
+    // ===== MOVIMENTO BASE =====
+    let nx = e.x + Math.cos(e.dir) * e.currentSpeed;
+    let ny = e.y + Math.sin(e.dir) * e.currentSpeed;
+
+    // ===== REPULSÃO DE PAREDES =====
+    const repulse = wallRepulsion(e.x, e.y, WALL_PUSH);
+nx += repulse.fx;
+ny += repulse.fy;
+
+// reforça distância das paredes
+if(!canMove(nx, ny, 0.35)){
+  e.currentSpeed = 0;
+  e.dir += 0.8; // vira
+  
+}
+
+
+    // ===== MOVIMENTO SEGURO =====
+    if (canMove(nx, e.y)) e.x = nx;
+    if (canMove(e.x, ny)) e.y = ny;
+
+    // ===== ANIMAÇÃO =====
+    e.animTime += 0.1;
+    e.walkPhase = Math.sin(e.animTime);
+  });
+}
+
+   
+function update(){
+
+  // ===== CHECA SE TERMINOU =====
+  if (!portalActive && enemyDead >= MAX_ENEMIES) {
+    portalActive = true;
+    portalX = 2.5; // spawn do player
+    portalY = 2.5;
+  }
+
+  // ===== CHECA SE O PLAYER ESTÁ PERTO DO PORTAL =====
+  if (portalActive) {
+    const dx = portalX - player.x;
+    const dy = portalY - player.y;
+    const dist = Math.hypot(dx, dy);
+    playerNearPortal = dist < 1.2;
+
+    // ===== CHECA SE TEM LINHA DE VISÃO pro portal =====
+    portalVisible = hasLineOfSight(portalX, portalY);
+  } else {
+    playerNearPortal = false;
+    portalVisible = false;
+  }
+
+  if (playerDead) {
+    deathCam = Math.min(deathCam + 0.01, 1);
+  } else {
+    updateInput();
+    updatePhysics();
+    updateEnemies();
+  }
+
+  if (isReloading) {
+    reloadAnim++;
+    if (reloadAnim >= RELOAD_TIME) {
+      isReloading = false;
+      ammo = maxAmmo;
+      mags--;
+      reloadAnim = 0;
+    }
+  }
+
+  if(recoil>0) recoil--;
+  if(flash>0) flash--;
+  if (damageCooldown > 0) damageCooldown--;
+  if (damageFlash > 0) damageFlash--;
+
+if (shootAnim > 0) shootAnim--;
+
+if (keys['e']) {
+  usePortal();
+}
+
+
+}
+
+
+// ===== DRAW =====
+
+ function drawBlood(){
+  // sangue no mapa (2D)
+  bloodSplats.forEach((b, idx)=>{
+    const dx = b.x - player.x;
+    const dy = b.y - player.y;
+    const dist = Math.hypot(dx, dy);
+
+    // se longe demais, ignora
+    if(dist > MAX_DEPTH) return;
+
+    // se não tiver LOS, ignora
+    const ang = Math.atan2(dy, dx);
+    const hit = castRay(ang, dist);
+    if(hit < dist - 0.1) return;
+
+    let rel = Math.atan2(dy, dx) - player.angle;
+    rel = Math.atan2(Math.sin(rel), Math.cos(rel));
+
+    if(Math.abs(rel) > FOV/2) return;
+
+    const screenX = (rel + FOV/2) / FOV * canvas.width;
+    const size = canvas.height / Math.max(dist, 0.0001) * b.size;
+
+    ctx.save();
+    ctx.translate(screenX, canvas.height/2);
+    ctx.rotate(b.rot);
+    ctx.fillStyle = 'rgba(180,0,0,0.7)';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, size*0.8, size*0.5, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+
+    b.life--;
+    if(b.life <= 0) bloodSplats.splice(idx, 1);
+  });
+}
+
+
+
+function drawEnemies(){
+  enemies.forEach(e=>{
+    if(e.dead && e.deathAnim <= 0) return;
+
+    const dx = e.x - player.x;
+    const dy = e.y - player.y;
+    const dist = Math.hypot(dx, dy);
+
+    let angle = Math.atan2(dy, dx) - player.angle;
+    angle = Math.atan2(Math.sin(angle), Math.cos(angle));
+
+    if (Math.abs(angle) > FOV / 2) return;
+
+    const screenX = Math.floor((angle + FOV / 2) / FOV * canvas.width);
+    if (screenX < 0 || screenX >= canvas.width) return;
+
+    // checa parede na frente (oclusão)
+    const dWall = wallDepthBuffer[screenX];
+    if (dWall && dWall < dist - 0.4) return;
+
+    let size = canvas.height / Math.max(dist, 0.0001);
+    let alpha = 1;
+
+    if (e.dead) {
+      alpha = e.deathAnim / 30;
+      size *= alpha;
+    }
+
+    const x = screenX;
+    const y = canvas.height / 2;
+
+    // alterna sprite (animação)
+    const frame = Math.floor(e.animTime) % 2;
+    const img = frame === 0 ? enemyImg1 : enemyImg2;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(
+      img,
+      x - size * 0.25,
+      y - size * 0.5,
+      size * 0.5,
+      size
+    );
+    ctx.restore();
+
+    // barra de vida (só se levou dano)
+    if (e.showHp && !e.dead) {
+      const barW = size * 0.5;
+      const barH = 6;
+      const hpRatio = e.hp / e.maxHp;
+
+      ctx.fillStyle = '#000';
+      ctx.fillRect(x - barW/2, y - size*0.6, barW, barH);
+
+      ctx.fillStyle = '#ff0000';
+      ctx.fillRect(x - barW/2, y - size*0.6, barW * hpRatio, barH);
+    }
+  });
+}
+
+
+
+
+function drawHUD(){
+  const w=canvas.width,h=canvas.height;
+
+  const hudY = h - 60;
+
+  ctx.fillStyle = '#0a0a0a';
+  ctx.fillRect(0, hudY, w, 60);
+
+  ctx.fillStyle = '#550000';
+  ctx.fillRect(0, hudY, w, 4);
+
+  const lifeX = 30;
+  const lifeW = 220;
+  const lifeH = 18;
+  const lifeRatio = player.hp / player.maxHp;
+
+  ctx.fillStyle = '#200000';
+  ctx.fillRect(lifeX, hudY + 20, lifeW, lifeH);
+
+  ctx.fillStyle = lifeRatio > 0.5 ? '#ff0000' : '#aa0000';
+  ctx.fillRect(lifeX, hudY + 20, lifeW * lifeRatio, lifeH);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px Arial';
+  ctx.fillText(`VIDA ${player.hp}%`, lifeX, hudY + 15);
+
+  const ammoX = w - 250;
+
+  ctx.fillStyle = '#202020';
+  ctx.fillRect(ammoX, hudY + 20, 140, 18);
+
+  ctx.fillStyle = '#ffaa00';
+  ctx.fillRect(ammoX, hudY + 20, 140 * (ammo / maxAmmo), 18);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px Arial';
+  ctx.fillText(`BALAS ${ammo}/${maxAmmo}`, ammoX, hudY + 15);
+
+  ctx.fillStyle = '#ff5555';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillText(`PENTES ${mags}`, ammoX + 150, hudY + 35);
+
+  const cx=w/2, cy=h/2;
+  ctx.strokeStyle='#ff0000';
+  ctx.beginPath();
+  ctx.moveTo(cx-8,cy); ctx.lineTo(cx+8,cy);
+  ctx.moveTo(cx,cy-8); ctx.lineTo(cx,cy+8);
+  ctx.stroke();
+
+if (isReloading) {
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px Arial';
+  ctx.fillText('RECARREGANDO...', 30, canvas.height - 80);
+}
+
+
+
+}
+
+function drawEnemyCounter(){
+  const w = canvas.width;
+  const h = canvas.height;
+
+  const boxW = 260;
+  const boxH = 50;
+
+  const x = w/2 - boxW/2;
+  const y = 18;
+
+  // fundo do box
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x, y, boxW, boxH);
+
+  // borda
+  ctx.strokeStyle = '#ff0000';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, boxW, boxH);
+
+  // texto
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(`ENEMIGOS: ${enemyDead} / ${enemyTotal}`, w/2, y + 32);
+}
+
+
+function draw(){
+  ctx.resetTransform(); // <---- MUITO IMPORTANTE
+
+  // ===== CÂMERA DE MORTE =====
+  let camOffset = 0;
+  if (playerDead) {
+    camOffset = deathCam * canvas.height * 0.4;
+    ctx.translate(0, camOffset);
+  }
+
+  // fundo
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,canvas.width,canvas.height/2);
+  ctx.fillStyle='#300000';
+  ctx.fillRect(0,canvas.height/2,canvas.width,canvas.height/2);
+
+  wallDepthBuffer.length = canvas.width;
+
+  for(let i=0;i<canvas.width;i++){
+    const a = player.angle - FOV/2 + (i / canvas.width) * FOV;
+    const rawDist = castRay(a);
+    const d = Math.max(rawDist * Math.cos(a - player.angle), 0.0001);
+
+    wallDepthBuffer[i] = d;
+
+    const h = canvas.height / d;
+    ctx.fillStyle = '#5b0000';
+    ctx.fillRect(i, canvas.height/2 - h/2, 1, h);
+  }
+
+  // ===== Se morreu, desenha tela de morte =====
+  if (playerDead && deathCam >= 1) {
+    ctx.resetTransform();
+
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    ctx.fillStyle = '#ff0000';
+    ctx.font = 'bold 64px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('VOCÊ MORREU', canvas.width/2, canvas.height/2 - 40);
+
+    ctx.font = '20px Arial';
+    ctx.fillText('O inferno te venceu.', canvas.width/2, canvas.height/2 + 10);
+
+    ctx.fillStyle = '#550000';
+    ctx.fillRect(canvas.width/2 - 140, canvas.height/2 + 60, 280, 50);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 22px Arial';
+    ctx.fillText('VOLTAR AO MENU', canvas.width/2, canvas.height/2 + 95);
+
+    return; // <--- PARA A EXECUÇÃO DO RESTO DO DRAW
+  }
+
+   drawBlood();
+
+  // ===== ENEMIES =====
+  drawEnemies();
+
+  drawWeapon();
+
+  drawPortalAndArrow();
+
+
+
+  // ===== FLASH DE DANO =====
+  if (damageFlash > 0) {
+    ctx.fillStyle = 'rgba(255,0,0,0.25)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+
+  if(flash>0){
+    ctx.fillStyle='rgba(255,200,150,0.2)';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+
+  // ===== HUD =====
+  drawHUD();
+
+  // ===== CONTADOR =====
+  drawEnemyCounter();
+}
+
+function drawWeapon(){
+  if(!gunImg.complete) return;
+
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // posição lateral estilo FPS
+  let gunX = w / 2 - 260;   // mais pro centro
+let gunY = h - 280;       // sobe um pouco (alinha o cano)
+
+
+  // recoil
+  gunY += recoil * 2;
+
+  // animação de tiro (rápida)
+  if (shootAnim > 0) {
+    gunY -= shootAnim * 3;
+  }
+
+  // animação de recarga (desce e sobe)
+  if (isReloading) {
+    const t = reloadAnim / RELOAD_TIME;
+    gunY += Math.sin(t * Math.PI) * 190;
+
+  }
+  gunX += recoil * 0.5;
+
+  ctx.drawImage(gunImg, gunX, gunY, 520, 300);
+
+}
+
+
+function drawPortalAndArrow() {
+  if (!portalActive) return;
+
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // --- 1) Mensagem no centro ---
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('um portal apareceu', w / 2, h / 2 - 80);
+
+  const dx = portalX - player.x;
+  const dy = portalY - player.y;
+  const dist = Math.hypot(dx, dy);
+
+  // --- 2) PORTAL (só aparece se tiver LOS) ---
+  if (portalVisible && dist < MAX_DEPTH) {
+    let ang = Math.atan2(dy, dx) - player.angle;
+    ang = Math.atan2(Math.sin(ang), Math.cos(ang));
+
+    if (Math.abs(ang) < FOV / 2) {
+      const size = h / Math.max(dist, 0.0001);
+      const x = (ang + FOV / 2) / FOV * w;
+      const y = h / 2;
+
+      ctx.save();
+
+      const grad = ctx.createRadialGradient(x, y, size * 0.05, x, y, size * 0.4);
+      grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+      grad.addColorStop(0.2, 'rgba(170,0,255,0.9)');
+      grad.addColorStop(0.6, 'rgba(90,0,150,0.8)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+      ctx.globalAlpha = 0.9;
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(x, y, size * 0.22, size * 0.35, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.globalAlpha = 0.7;
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.ellipse(x, y, size * 0.18, size * 0.28, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+  }
+
+  // --- 3) Seta melhor (mais clara) ---
+  let angleToPortal = Math.atan2(dy, dx);
+  let relative = angleToPortal - player.angle;
+  relative = Math.atan2(Math.sin(relative), Math.cos(relative));
+
+  const arrowX = w / 2;
+  const arrowY = 60;
+
+  ctx.save();
+  ctx.translate(arrowX, arrowY);
+  ctx.rotate(relative);
+
+  // corpo da seta (fundo preto)
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(-6, 0, 12, 60);
+
+  // cabeça da seta (fundo preto)
+  ctx.beginPath();
+  ctx.moveTo(-16, 0);
+  ctx.lineTo(16, 0);
+  ctx.lineTo(0, -28);
+  ctx.closePath();
+  ctx.fill();
+
+  // seta vermelha por cima
+  ctx.fillStyle = '#ff0000';
+  ctx.fillRect(-4, 0, 8, 55);
+
+  ctx.beginPath();
+  ctx.moveTo(-12, 0);
+  ctx.lineTo(12, 0);
+  ctx.lineTo(0, -22);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.restore();
+
+  // --- 4) Texto "aperte E" quando perto ---
+  if (playerNearPortal) {
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('aperte E para usar', w / 2, h / 2 + 120);
+  }
+}
+
+
+
+
+function goToWin(){
+  gameScreen.classList.add('hidden');
+  menu.classList.remove('hidden');
+  menu.innerHTML = `
+    <div style="position:absolute;top:30%;left:10%;color:#fff">
+      <h1 style="font-size:64px;color:#ff0000">VOCÊ VENCEU!</h1>
+      <p style="font-size:24px">O portal te levou para o próximo nível.</p>
+      <button onclick="location.reload()">JOGAR DE NOVO</button>
+    </div>
+  `;
+}
+
+
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+</script>
+
+</body>
+</html>
